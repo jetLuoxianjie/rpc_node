@@ -14,6 +14,7 @@ grammar_cjkRuby: true
 - - [[4.1] GRPC框架解析](#GRPC框架解析)
 - - [[4.2] GRPC框架优势](#GRPC框架优势)
 - - [[4.3] GRPC框架缺点](#GRPC框架缺点)
+- - [[4.4] 一个简单gRPC服务的golang实现](#一个简单gRPC服务的golang实现)
 - [[5] 从0到1实现简易RPC框架](#从0到1实现简易RPC框架)
 
 <!-- /TOC -->
@@ -117,10 +118,194 @@ gRPC 是一个现代化的开源 RPC 框架，一开始由 google 开发，是�
 > 3.与REST等协议对比生态系统相对较小。
 
 
+### 一个简单gRPC服务的golang实现
+**下载 protoc 编译器（如:protoc-3.20.1-win32.zip）：[protobuf](https://github.com/protocolbuffers/protobuf/releases)，选择合适的平台，解压后将可执行文件加入环境变量。**
+**go get google.golang.org/protobuf/cmd/protoc-gen-go**
+**go get google.golang.org/grpc/cmd/protoc-gen-go-grpc**
+ 
+ 
+ 创建代码目录 **grpc_hero**，实现一个简单的从**队伍服**获取存在**逻辑服**中玩家英雄数据 rpc 服务，在其中新建三个文件夹 proto、server、client 分别存放服务定义文件和生成的目标代码、服务端程序实现、客户端程序实现，然后执行 go mod init grpc_hero 初始化模块。
+
+ 
+ **工程目录如下**
+- grpc_hero
+- - logic
+- - team
+- - proto
+
+#### 服务器定义
+开发 gRPC 应用程序时，要首先定义服务接口，然后生成服务端骨架和客户端 stub，客户端通过调用其中定义的方法来访问远程服务器上的方法，服务定义都以 protocol buffers 的形式记录，也就是 gRPC 所使用的服务定义语言
+**在 proto 目录下新建服务定义文件 hero.proto**
+
+``` protobuf
+// 版本
+syntax = "proto3";
+// proto文件所属包名
+package proto;
+// 声明生成的go文件所属的包，路径末尾为包名，相对路径是相对于编译生成目标代码时的工作路径
+option go_package = "./proto";
+
+// 包含两个远程方法的 rpc 服务，远程方法只能有一个参数和一个返回值  (一个是请求 一个是返回)
+service Hero {
+  rpc GetHero(Request) returns (Response);
+}
+
+// 自定义消息类型，用这种方法传递多个参数，必须使用唯一数字标识每个字段
+message Response {
+  HeroInfo heroInfo = 1;
+}
+
+message Request {
+  int32 playerId = 1;
+  int32 heroId = 2;
+}
+
+message HeroInfo {
+  int32 heroId = 1;
+  int32 heroLevel = 2;
+  string heroName = 3;
+}
+
+```
+编译服务定义文件生成目标源代码，这一步之后在 **proto** 文件下生成了以下两个文件：
+**hero.pb.go**，包含用于填充、序列化、检索请求和响应消息类型的所有 protocol buffers 代码
+**hero_grpc.pb.go**，包含服务端需要继承实现和客户端进行调用的接口定义
+
+> go_out 和 go-grpc-out 目录是相对于服务定义文件中 go_package 指定的目录
+> protoc proto/hero.proto --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative
+
+
+#### 服务端(logic被调用端)实现
+编译生成服务端骨架的时候，已经得到了建立 gRPC 连接、相关消息类型和接口的基础代码，接下来就是实现得到的接口，在 logic文件夹中新建服务端主程序 logic.go：
+
+``` go
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+
+	pb "grpc_hero/proto"
+
+	"google.golang.org/grpc"
+)
+
+const (
+	port = ":50051"
+)
+
+// 对服务器的抽象，用来实现服务方法
+type server struct {
+	pb.UnimplementedHeroServer
+}
+
+// 存放玩家的英雄数据
+var playerHero map[int32]map[int32]*pb.HeroInfo
+
+// GetHero 实现 GetHero 方法
+func (s *server) GetHero(ctx context.Context, re *pb.Request) (*pb.Response, error) {
+	if re == nil {
+		return nil, errors.New("request nil")
+	}
+	heroMap, ok := playerHero[re.GetPlayerId()]
+	if !ok {
+		return nil, errors.New("no  heroMap")
+	}
+	heroInfo, ok := heroMap[re.GetHeroId()]
+	if !ok {
+		return nil, errors.New("no  heroInfo")
+	}
+	return &pb.Response{HeroInfo: heroInfo}, nil
+}
+
+//填充测试数据
+func initTestData() {
+	playerHero = make(map[int32]map[int32]*pb.HeroInfo)
+	for i := int32(0); i < 10; i++ {
+		playerHero[i] = make(map[int32]*pb.HeroInfo)
+		playerHero[i][i] = &pb.HeroInfo{
+			HeroId:    i,
+			HeroLevel: i,
+			HeroName:  fmt.Sprintf("英雄:[%d]", i),
+		}
+	}
+
+}
+
+func main() {
+	//填充测试数据
+	initTestData()
+	// 创建一个 tcp 监听器
+	lis, err := net.Listen("tcp", port)
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+	// 创建一个 gRPC 服务器实例
+	s := grpc.NewServer()
+	// 将服务注册到 gRPC 服务器上
+	pb.RegisterHeroServer(s, &server{})
+	// 绑定 gRPC 服务器到指定 tcp
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("failed to serve: %v", err)
+	}
+}
+
+```
+
+#### 客户端(team调用端)实现
+接下来创建客户端程序来与服务器对话，之前编译服务定义文件生成的目标源代码已经包含了访问细节的实现，我们只需要创建客户端实例就可以直接调用远程方法。在 team文件夹中创建客户端主程序 team.go：
+
+``` go
+package main
+
+import (
+	"context"
+	pb "grpc_hero/proto"
+	"log"
+
+	"google.golang.org/grpc"
+)
+
+const (
+	// 服务端地址
+	address = "localhost:50051"
+)
+
+func main() {
+	// 创建 gRPC 连接
+	conn, err := grpc.Dial(address, grpc.WithInsecure())
+	if err != nil {
+		log.Fatalf("did not connect: %v", err)
+	}
+	defer conn.Close()
+	// 创建客户端 stub，利用它调用远程方法
+	c := pb.NewHeroClient(conn)
+	// 调用远程方法
+	r, err := c.GetHero(context.Background(), &pb.Request{
+		PlayerId: 1,
+		HeroId:   1,
+	})
+	if err != nil {
+		log.Fatalf("getHero err : %v", err)
+	}
+	log.Printf("Response [%+v]", r)
+}
+```
+#### 构建运行
+分别构建运行服务端和客户端程序，go build 或者直接 go run
+**启动logic服务端：go run ./logic/logic.go**
+**启动team客户端：go run ./team/team.go**
+
+
 ## 从0到1实现简易RPC框架
 
 **当前简易RPC 的目的是以最少的代码，实现 RPC 框架中最为重要的部分，帮助大家理解 RPC 框架在设计时需要考虑什么。代码简洁是第一位的，功能是第二位的。**
 
 //todo:
+
+
 
 
