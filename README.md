@@ -304,11 +304,11 @@ func main() {
 
 **当前简易RPC 的目的是以最少的代码，实现 RPC 框架中最为重要的部分，帮助大家理解 RPC 框架在设计时需要考虑什么。代码简洁是第一位的，功能是第二位的。**
 
-**
+*
 
-#### 见rpc_demo
+[见RPC_Demo (200多行代码)](https://github.com/Jet-luoxianjie/rpc_node/tree/main/rpc_demo)
 
-**
+*
 
 
 
